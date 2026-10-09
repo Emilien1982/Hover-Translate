@@ -1,4 +1,4 @@
-import { getSettings, activeLlm } from './settings.js';
+import { getSettings, activeLlm, resolveTarget, baseLang } from './settings.js';
 
 const LANG_NAMES = new Intl.DisplayNames(['fr'], { type: 'language' });
 
@@ -47,21 +47,25 @@ async function handle(req, port, signal) {
   };
   const s = await getSettings();
   const llm = activeLlm(s);
-  const key = [s.targetLang, llm?.kind, llm?.model, s.googleQuick, req.text, req.context].join('\u0001');
+  // Langue source détectée par le content script sur la phrase ('' = inconnue).
+  // Si elle est identique à la destination : définition dans cette langue au lieu d'une traduction.
+  const lang = { target: resolveTarget(s.targetLang), src: req.srcLang || '' };
+  lang.mono = !!lang.src && baseLang(lang.src) === baseLang(lang.target);
+  const key = [lang.target, lang.src, llm?.kind, llm?.model, s.googleQuick, req.text, req.context].join('\u0001');
 
   const hit = cache.get(key);
   if (hit) return send({ type: 'cached', ...hit });
 
   const needsKey = s.provider !== 'none' && !llm;
-  const entry = { google: null, llm: '', llmLabel: llm?.label ?? null, needsKey, timings: {} };
+  const entry = { google: null, llm: '', llmLabel: llm?.label ?? null, needsKey, mono: lang.mono, timings: {} };
   const t0 = performance.now();
   let failed = false;
-  send({ type: 'start', llmLabel: entry.llmLabel, needsKey });
+  send({ type: 'start', llmLabel: entry.llmLabel, needsKey, mono: lang.mono });
 
   const tasks = [];
   if (s.googleQuick || !llm) {
     tasks.push(
-      google(req.text, s.targetLang, signal)
+      google(req.text, lang, signal)
         .then((g) => {
           entry.google = g;
           entry.timings.google = Math.round(performance.now() - t0);
@@ -80,7 +84,7 @@ async function handle(req, port, signal) {
       send({ type: 'delta', text });
     };
     tasks.push(
-      streamLlm(llm, s, req, onDelta, signal)
+      streamLlm(llm, s, lang, req, onDelta, signal)
         .then(() => {
           entry.timings.llm = Math.round(performance.now() - t0);
           send({ type: 'llm-done', ms: entry.timings.llm, first: entry.timings.first });
@@ -99,10 +103,13 @@ async function handle(req, port, signal) {
 
 // ---------- Google Translate (endpoint public, sans clé) ----------
 
-async function google(text, tl, signal) {
+async function google(text, lang, signal) {
+  const { src, target } = lang;
+  // dt=md : définitions dans la langue source, utilisées quand source = destination.
   const url =
-    'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&dt=t&dt=bd&dj=1' +
-    `&tl=${encodeURIComponent(tl)}&hl=${encodeURIComponent(tl)}&q=${encodeURIComponent(text)}`;
+    'https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&dt=bd&dt=md&dj=1' +
+    `&sl=${encodeURIComponent(baseLang(src) || 'auto')}&tl=${encodeURIComponent(target)}` +
+    `&hl=${encodeURIComponent(target)}&q=${encodeURIComponent(text)}`;
   const res = await fetch(url, { signal });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
@@ -110,30 +117,49 @@ async function google(text, tl, signal) {
     quick: (data.sentences ?? []).map((x) => x.trans ?? '').join('').trim(),
     src: data.src ?? '',
     dict: (data.dict ?? []).map((d) => ({ pos: d.pos, terms: (d.terms ?? []).slice(0, 6) })),
+    defs: (data.definitions ?? []).slice(0, 3).map((d) => ({
+      pos: d.pos,
+      glosses: (d.entry ?? []).slice(0, 3).map((e) => e.gloss).filter(Boolean),
+    })),
   };
 }
 
 // ---------- LLM en streaming ----------
 
-function prompts(s, req) {
-  const target = LANG_NAMES.of(s.targetLang) ?? s.targetLang;
-  const system = [
-    `Tu es un dictionnaire bilingue instantané. Tu traduis vers : ${target}.`,
+function prompts(lang, req) {
+  const target = LANG_NAMES.of(lang.target) ?? lang.target;
+  const source = lang.src ? LANG_NAMES.of(baseLang(lang.src)) ?? lang.src : null;
+  const common = [
     'On te donne un mot (ou une expression) et la phrase où il apparaît.',
     `Réponds entièrement en ${target}, en texte brut (pas de markdown, pas de préambule), dans ce format exact :`,
-    'Ligne 1 : la meilleure traduction du mot DANS CE CONTEXTE, seule (1 à 4 mots).',
-    'Ligne 2 : catégorie grammaticale · forme de base si le mot est fléchi · langue d\'origine.',
-    'Puis 1 à 3 sens numérotés, celui du contexte en premier :',
-    '1. traduction(s) — définition courte',
-    '   « exemple court en langue d\'origine » → traduction',
-    'Sois bref : 8 lignes au maximum.',
-  ].join('\n');
+  ];
+  const system = lang.mono
+    ? [
+        `Tu es un dictionnaire unilingue instantané (${target}). Tu ne traduis pas : tu définis.`,
+        ...common,
+        'Ligne 1 : un synonyme ou une définition très courte du mot DANS CE CONTEXTE (1 à 4 mots).',
+        'Ligne 2 : catégorie grammaticale · forme de base si le mot est fléchi.',
+        'Puis 1 à 3 sens numérotés, celui du contexte en premier :',
+        '1. définition courte',
+        '   « exemple court »',
+        'Sois bref : 8 lignes au maximum.',
+      ]
+    : [
+        `Tu es un dictionnaire bilingue instantané. Tu traduis ${source ? `de : ${source}, ` : ''}vers : ${target}.`,
+        ...common,
+        'Ligne 1 : la meilleure traduction du mot DANS CE CONTEXTE, seule (1 à 4 mots).',
+        "Ligne 2 : catégorie grammaticale · forme de base si le mot est fléchi · langue d'origine.",
+        'Puis 1 à 3 sens numérotés, celui du contexte en premier :',
+        '1. traduction(s) — définition courte',
+        "   « exemple court en langue d'origine » → traduction",
+        'Sois bref : 8 lignes au maximum.',
+      ];
   const user = `Mot : « ${req.text} »\nContexte : « ${req.context || req.text} »`;
-  return { system, user };
+  return { system: system.join('\n'), user };
 }
 
-async function streamLlm(llm, s, req, onDelta, signal) {
-  const { system, user } = prompts(s, req);
+async function streamLlm(llm, s, lang, req, onDelta, signal) {
+  const { system, user } = prompts(lang, req);
   let url, headers, body, extract;
 
   if (llm.kind === 'anthropic') {

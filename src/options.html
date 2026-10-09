@@ -43,8 +43,9 @@
 
   <fieldset>
     <legend>Traduction</legend>
-    <label for="targetLang">Langue cible (code ISO : fr, en, es, de…)</label>
-    <input type="text" id="targetLang" maxlength="5">
+    <label for="targetLang">Langue de destination</label>
+    <select id="targetLang"></select>
+    <p class="help">Si le mot est déjà dans cette langue, la pop-up donne sa définition au lieu d'une traduction.</p>
     <label class="row"><input type="checkbox" id="googleQuick"> Titre instantané via Google Translate (gratuit, ~150 ms)</label>
 
     <label for="provider">Moteur IA pour l'entrée de dictionnaire</label>

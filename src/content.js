@@ -33,7 +33,7 @@
       const r = sel.getRangeAt(0);
       const text = sel.toString().trim();
       if (text && [...r.getClientRects()].some((rc) => inside(rc, x, y))) {
-        return { text: text.slice(0, 200), rect: r.getBoundingClientRect(), context: contextOf(r.startContainer, r.startOffset) };
+        return { text: text.slice(0, 200), rect: r.getBoundingClientRect(), context: contextOf(r.startContainer, r.startOffset), declaredLang: declaredLang(r.startContainer) };
       }
     }
     const caret = document.caretRangeFromPoint?.(x, y);
@@ -52,9 +52,14 @@
       // caretRangeFromPoint renvoie le caret le plus proche, même dans une marge :
       // on vérifie que la souris est réellement sur le mot.
       const rect = [...range.getClientRects()].find((rc) => inside(rc, x, y, 1));
-      if (rect) return { text: seg.segment, rect, context: contextOf(node, seg.index) };
+      if (rect) return { text: seg.segment, rect, context: contextOf(node, seg.index), declaredLang: declaredLang(node) };
     }
     return null;
+  }
+
+  function declaredLang(node) {
+    const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+    return el?.closest('[lang]')?.getAttribute('lang') || '';
   }
 
   // Phrase contenant le mot, pour que le LLM choisisse le bon sens.
@@ -74,6 +79,31 @@
     }
     const sentence = sentenceSeg.segment(full).containing(Math.min(idx, Math.max(full.length - 1, 0)));
     return (sentence?.segment ?? full).replace(/\s+/g, ' ').trim().slice(0, 400);
+  }
+
+  // Langue source, détectée sur la phrase (un mot seul est trop ambigu : « pain », « chat »…).
+  // 1) détecteur intégré à Chrome, sur l'appareil ; 2) attribut lang le plus proche ; 3) '' = Google devine.
+  let detector;
+  function getDetector() {
+    if (detector === undefined) {
+      detector = 'LanguageDetector' in self
+        ? LanguageDetector.availability()
+            .then((a) => (a === 'available' ? LanguageDetector.create() : null))
+            .catch(() => null)
+        : Promise.resolve(null);
+    }
+    return detector;
+  }
+
+  async function sourceLang(hit) {
+    const d = await getDetector();
+    if (d && hit.context.length >= 12) {
+      try {
+        const [top] = await d.detect(hit.context);
+        if (top && top.detectedLanguage !== 'und' && top.confidence >= 0.5) return top.detectedLanguage;
+      } catch {}
+    }
+    return hit.declaredLang || '';
   }
 
   // ---------- Événements ----------
@@ -140,12 +170,12 @@
     current = hit;
     port?.disconnect();
     port = chrome.runtime.connect({ name: 'translate' });
-    const state = { word: hit.text, google: null, llm: '', llmLabel: null, error: null, timings: {}, done: false };
+    const state = { word: hit.text, google: null, llm: '', llmLabel: null, mono: false, error: null, timings: {}, done: false };
     render(state);
     port.onMessage.addListener((m) => {
       switch (m.type) {
-        case 'start': state.llmLabel = m.llmLabel; state.needsKey = m.needsKey; break;
-        case 'cached': Object.assign(state, { google: m.google, llm: m.llm, llmLabel: m.llmLabel, needsKey: m.needsKey, timings: { cache: true }, done: true }); break;
+        case 'start': state.llmLabel = m.llmLabel; state.needsKey = m.needsKey; state.mono = m.mono; break;
+        case 'cached': Object.assign(state, { google: m.google, llm: m.llm, llmLabel: m.llmLabel, needsKey: m.needsKey, mono: m.mono, timings: { cache: true }, done: true }); break;
         case 'google': state.google = m.google; state.timings.google = m.ms; break;
         case 'delta': state.llm += m.text; break;
         case 'llm-done': state.timings.llm = m.ms; state.timings.first = m.first; break;
@@ -154,7 +184,10 @@
       }
       if (current === hit) render(state);
     });
-    port.postMessage({ text: hit.text, context: hit.context });
+    const p = port;
+    sourceLang(hit).then((srcLang) => {
+      if (p === port) p.postMessage({ text: hit.text, context: hit.context, srcLang });
+    });
   }
 
   // ---------- Pop-up (Shadow DOM : styles isolés de la page) ----------
@@ -182,13 +215,16 @@
     ensureHost();
     const lines = st.llm.split('\n').map((l) => l.trimEnd()).filter((l) => l.trim());
     const llmTitleReady = st.llm.includes('\n') || (st.done && lines.length);
-    const title = (llmTitleReady && lines[0]) || st.google?.quick || '';
+    // Même langue que la destination : pas de traduction, le titre est le mot (ou le synonyme du LLM).
+    const fallbackTitle = st.mono ? (st.google || st.done ? st.word : '') : st.google?.quick;
+    const title = (llmTitleReady && lines[0]) || fallbackTitle || '';
     const body = lines.slice(1);
 
     card.replaceChildren();
     card.append(title ? el('div', 'title', title) : el('div', 'title skeleton', ' '));
 
     const meta = el('div', 'word', st.word);
+    if (st.mono) meta.textContent = st.llm ? st.word + ' · définition' : 'définition';
     if (st.google?.src) meta.append(el('span', 'lang', st.google.src.toUpperCase()));
     card.append(meta);
 
@@ -198,7 +234,12 @@
         const cls = /^\d+[.)]/.test(line.trim()) ? 'sense' : /^\s|^[«"“]/.test(line) ? 'example' : i === 0 ? 'meta' : 'line';
         dict.append(el('div', cls, line.trim()));
       });
-    } else if (st.google?.dict?.length && (!st.llmLabel || st.error || st.done)) {
+    } else if (st.mono && st.google?.defs?.length && (!st.llmLabel || st.error || st.done)) {
+      for (const d of st.google.defs) {
+        dict.append(el('div', 'meta', d.pos));
+        d.glosses.forEach((g, i) => dict.append(el('div', 'sense', `${i + 1}. ${g}`)));
+      }
+    } else if (!st.mono && st.google?.dict?.length && (!st.llmLabel || st.error || st.done)) {
       for (const d of st.google.dict) {
         const row = el('div', 'line');
         row.append(el('b', '', d.pos + ' '), document.createTextNode(d.terms.join(', ')));
@@ -243,6 +284,7 @@
 
   function toast(text) {
     if (window !== window.top) return;
+    document.querySelector('hover-translate-toast')?.remove();
     const t = document.createElement('hover-translate-toast');
     t.style.cssText = 'all: initial; position: fixed; z-index: 2147483647; bottom: 20px; right: 20px;';
     t.attachShadow({ mode: 'open' }).innerHTML = `<style>${CSS}</style><div class="toast">${text}</div>`;

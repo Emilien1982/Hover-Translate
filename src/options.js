@@ -1,4 +1,4 @@
-import { DEFAULTS, getSettings } from './settings.js';
+import { DEFAULTS, LANGUAGES, getSettings, resolveTarget } from './settings.js';
 
 const $ = (id) => document.getElementById(id);
 const fields = Object.keys(DEFAULTS);
@@ -9,8 +9,26 @@ function showProvider() {
   }
 }
 
+function fillLanguages() {
+  const ui = navigator.language || 'fr';
+  const names = new Intl.DisplayNames([ui], { type: 'language' });
+  const sel = $('targetLang');
+  const opt = (value, label) => sel.append(new Option(label, value));
+  opt('auto', `Automatique — langue du navigateur (${names.of(resolveTarget('auto'))})`);
+  LANGUAGES.map((code) => {
+    const native = new Intl.DisplayNames([code], { type: 'language' }).of(code);
+    const local = names.of(code);
+    return [code, local.toLowerCase() === native.toLowerCase() ? local : `${local} — ${native}`];
+  })
+    .sort((a, b) => a[1].localeCompare(b[1], ui))
+    .forEach(([code, label]) => opt(code, label));
+}
+
 async function load() {
+  fillLanguages();
   const s = await getSettings();
+  // Anciennes valeurs hors liste (ex. « fr-CA » saisi à la main) : retour à automatique.
+  if (![...$('targetLang').options].some((o) => o.value === s.targetLang)) s.targetLang = 'auto';
   for (const f of fields) {
     const el = $(f);
     if (el.type === 'checkbox') el.checked = s[f];
@@ -28,7 +46,6 @@ async function save() {
     values[f] = el.type === 'checkbox' ? el.checked : el.value.trim();
   }
   values.baseUrl = values.baseUrl.replace(/\/+$/, '');
-  values.targetLang = (values.targetLang || DEFAULTS.targetLang).toLowerCase();
   await chrome.storage.local.set(values);
   $('saved').textContent = 'Enregistré ✓';
   setTimeout(() => ($('saved').textContent = ''), 1500);

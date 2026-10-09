@@ -26,6 +26,7 @@ const PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>
 <p id="p1">We had a lovely picnic on the bank of the river, watching the boats drift by.</p>
 <p id="p2">Later she went to the bank to deposit her salary before it closed.</p>
 <p id="p3">The children were running happily across the meadow.</p>
+<p id="p4" lang="fr">Il a acheté du pain frais ce matin à la boulangerie du quartier.</p>
 </body></html>`;
 
 const llmRequests = [];
@@ -65,7 +66,8 @@ const ctx = await chromium.launchPersistentContext('', {
   channel: 'chromium',
   headless: true,
   viewport: { width: 900, height: 600 },
-  args: [`--disable-extensions-except=${root}`, `--load-extension=${root}`],
+  locale: 'fr-FR',
+  args: [`--disable-extensions-except=${root}`, `--load-extension=${root}`, '--lang=fr-FR'],
 });
 const sw = ctx.serviceWorkers()[0] ?? (await ctx.waitForEvent('serviceworker'));
 const setSettings = (s) => sw.evaluate((s) => chrome.storage.local.set(s), s);
@@ -73,6 +75,8 @@ const setSettings = (s) => sw.evaluate((s) => chrome.storage.local.set(s), s);
 const page = await ctx.newPage();
 await page.goto(base);
 await page.waitForTimeout(300);
+console.log('  (détecteur de langue de Chrome dans ce Chromium :',
+  await page.evaluate(async () => ('LanguageDetector' in self ? LanguageDetector.availability() : 'absent')), ')');
 
 // Centre de la n-ième occurrence d'un mot dans un paragraphe.
 async function wordCenter(sel, word) {
@@ -106,7 +110,7 @@ async function waitPopup(pred, timeout = 4000) {
 }
 
 // 1. Survol + Alt maintenu, moteur Google + faux Claude
-await setSettings({ provider: 'anthropic', anthropicKey: 'test-key', baseUrl: base, targetLang: 'fr', holdKey: 'Alt', googleQuick: true });
+await setSettings({ provider: 'anthropic', anthropicKey: 'test-key', baseUrl: base, targetLang: 'auto', holdKey: 'Alt', googleQuick: true });
 let pt = await wordCenter('#p1', 'bank');
 await page.mouse.move(pt.x, pt.y);
 await page.waitForTimeout(150);
@@ -127,6 +131,7 @@ check(req?.headers['x-api-key'] === 'test-key', 'clé API envoyée dans x-api-ke
 check(req?.headers['anthropic-dangerous-direct-browser-access'] === 'true', 'en-tête accès direct navigateur');
 check(req?.body.model === 'claude-haiku-5-5' && req?.body.stream === true, 'modèle Haiku 5.5 en streaming');
 check(req?.body.messages[0].content.includes('picnic on the bank of the river'), 'phrase de contexte transmise', req?.body.messages[0].content.replace(/\n/g, ' | '));
+check(req?.body.system.includes('de : anglais, vers : français'), 'langue « automatique » = français (navigateur), source anglaise transmise', req?.body.system.split('\n')[0]);
 
 // 2. Relâcher Alt : la pop-up reste lisible ; s'éloigner la ferme
 await page.keyboard.up('Alt');
@@ -181,6 +186,39 @@ await page.screenshot({ path: path.join(outDir, '2-popup-google.png') });
 await page.keyboard.press('Escape');
 check((await popup()) === null, 'Échap ferme et désactive');
 
+// 6b. Phrase française, destination française : définition au lieu de traduction (Google seul)
+pt = await wordCenter('#p4', 'pain');
+await page.mouse.move(pt.x, pt.y);
+await page.keyboard.down('Alt');
+p = await waitPopup((p) => p?.dict?.includes('farine'));
+check(p?.title === 'pain' && p?.word?.startsWith('définition') && p?.dict?.includes('farine'),
+  'même langue → définition en français (Google)', `« ${p?.title} » / ${p?.word} / ${p?.dict?.slice(0, 80)}…`);
+await page.screenshot({ path: path.join(outDir, '2b-definition-google.png') });
+await page.keyboard.up('Alt');
+await page.mouse.move(20, 580);
+
+// 6c. Même cas avec le LLM : invite « dictionnaire unilingue »
+await setSettings({ provider: 'anthropic', anthropicKey: 'test-key', baseUrl: base });
+pt = await wordCenter('#p4', 'boulangerie');
+await page.mouse.move(pt.x, pt.y);
+await page.keyboard.down('Alt');
+await waitPopup((p) => p?.footer && !p.footer.includes('…'));
+check(llmRequests.at(-1).body.system.startsWith('Tu es un dictionnaire unilingue instantané (français)'),
+  'même langue → invite de définition envoyée au LLM', llmRequests.at(-1).body.system.split('\n')[0]);
+await page.keyboard.up('Alt');
+await page.mouse.move(20, 580);
+
+// 6d. Destination forcée (allemand) : la phrase française est traduite
+await setSettings({ provider: 'none', targetLang: 'de' });
+pt = await wordCenter('#p4', 'pain');
+await page.mouse.move(pt.x, pt.y);
+await page.keyboard.down('Alt');
+p = await waitPopup((p) => p?.footer?.startsWith('Google'));
+check(p?.title?.toLowerCase() === 'brot', 'destination allemande : « pain » (fr) → Brot', `« ${p?.title} »`);
+await page.keyboard.up('Alt');
+await page.mouse.move(20, 580);
+await setSettings({ targetLang: 'auto' });
+
 // 7. Erreur API lisible (clé refusée)
 await setSettings({ provider: 'anthropic', baseUrl: 'https://api.anthropic.com', anthropicKey: 'sk-ant-invalide' });
 pt = await wordCenter('#p3', 'children');
@@ -197,6 +235,9 @@ const opt = await ctx.newPage();
 await opt.goto(`chrome-extension://${extId}/src/options.html`);
 await opt.waitForTimeout(200);
 check(await opt.locator('#anthropicKey').inputValue() === 'sk-ant-invalide', 'options : réglages relus depuis le stockage');
+const langs = await opt.locator('#targetLang option').allTextContents();
+check(langs[0] === 'Automatique — langue du navigateur (français)' && langs.length > 40 && langs.includes('allemand — Deutsch'),
+  'options : liste des langues', `${langs.length} options, ex. « ${langs[0]} », « ${langs[1]} »`);
 await opt.screenshot({ path: path.join(outDir, '4-options.png'), fullPage: true });
 
 await ctx.close();
