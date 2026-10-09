@@ -170,22 +170,22 @@
     current = hit;
     port?.disconnect();
     port = chrome.runtime.connect({ name: 'translate' });
-    const state = { word: hit.text, google: null, llm: '', llmLabel: null, mono: false, error: null, timings: {}, done: false };
+    const state = { word: hit.text, srcLang: '', text: '', label: '', mono: false, setup: false, error: null, timings: {}, done: false };
     render(state);
     port.onMessage.addListener((m) => {
       switch (m.type) {
-        case 'start': state.llmLabel = m.llmLabel; state.needsKey = m.needsKey; state.mono = m.mono; break;
-        case 'cached': Object.assign(state, { google: m.google, llm: m.llm, llmLabel: m.llmLabel, needsKey: m.needsKey, mono: m.mono, timings: { cache: true }, done: true }); break;
-        case 'google': state.google = m.google; state.timings.google = m.ms; break;
-        case 'delta': state.llm += m.text; break;
-        case 'llm-done': state.timings.llm = m.ms; state.timings.first = m.first; break;
-        case 'error': state.error = `${m.source} : ${m.message}`; break;
-        case 'done': state.done = true; break;
+        case 'setup': state.setup = true; state.done = true; break;
+        case 'start': state.label = m.label; state.mono = m.mono; break;
+        case 'cached': Object.assign(state, { text: m.text, label: m.label, mono: m.mono, timings: { cache: true }, done: true }); break;
+        case 'delta': state.text += m.text; break;
+        case 'done': state.timings = m.timings; state.done = true; break;
+        case 'error': state.error = m.message; state.done = true; break;
       }
       if (current === hit) render(state);
     });
     const p = port;
     sourceLang(hit).then((srcLang) => {
+      state.srcLang = srcLang;
       if (p === port) p.postMessage({ text: hit.text, context: hit.context, srcLang });
     });
   }
@@ -213,53 +213,41 @@
 
   function render(st) {
     ensureHost();
-    const lines = st.llm.split('\n').map((l) => l.trimEnd()).filter((l) => l.trim());
-    const llmTitleReady = st.llm.includes('\n') || (st.done && lines.length);
-    // Même langue que la destination : pas de traduction, le titre est le mot (ou le synonyme du LLM).
-    const fallbackTitle = st.mono ? (st.google || st.done ? st.word : '') : st.google?.quick;
-    const title = (llmTitleReady && lines[0]) || fallbackTitle || '';
-    const body = lines.slice(1);
-
     card.replaceChildren();
-    card.append(title ? el('div', 'title', title) : el('div', 'title skeleton', ' '));
 
-    const meta = el('div', 'word', st.word);
-    if (st.mono) meta.textContent = st.llm ? st.word + ' · définition' : 'définition';
-    if (st.google?.src) meta.append(el('span', 'lang', st.google.src.toUpperCase()));
+    if (st.setup) {
+      card.append(el('div', 'title', 'Hover Translate'));
+      card.append(el('div', 'dict', "Connectez un fournisseur d'IA (Gemini gratuit, OpenRouter, ChatGPT…) pour traduire au survol."));
+      const btn = el('button', 'setup', 'Configurer');
+      btn.addEventListener('click', () => chrome.runtime.sendMessage({ type: 'open-options' }));
+      card.append(btn);
+      return place();
+    }
+
+    // Le titre n'apparaît qu'une fois la 1re ligne du LLM complète : jamais de traduction provisoire.
+    const lines = st.text.split('\n').map((l) => l.trimEnd()).filter((l) => l.trim());
+    const titleReady = st.text.includes('\n') || (st.done && lines.length);
+    const title = titleReady ? lines[0] : '';
+    const body = titleReady ? lines.slice(1) : [];
+
+    card.append(title ? el('div', 'title', title) : el('div', 'title skeleton', '\u00a0'));
+
+    const meta = el('div', 'word', st.mono ? `${st.word} · définition` : st.word);
+    if (st.srcLang) meta.append(el('span', 'lang', st.srcLang.split('-')[0].toUpperCase()));
     card.append(meta);
 
     const dict = el('div', 'dict');
-    if (body.length) {
-      body.forEach((line, i) => {
-        const cls = /^\d+[.)]/.test(line.trim()) ? 'sense' : /^\s|^[«"“]/.test(line) ? 'example' : i === 0 ? 'meta' : 'line';
-        dict.append(el('div', cls, line.trim()));
-      });
-    } else if (st.mono && st.google?.defs?.length && (!st.llmLabel || st.error || st.done)) {
-      for (const d of st.google.defs) {
-        dict.append(el('div', 'meta', d.pos));
-        d.glosses.forEach((g, i) => dict.append(el('div', 'sense', `${i + 1}. ${g}`)));
-      }
-    } else if (!st.mono && st.google?.dict?.length && (!st.llmLabel || st.error || st.done)) {
-      for (const d of st.google.dict) {
-        const row = el('div', 'line');
-        row.append(el('b', '', d.pos + ' '), document.createTextNode(d.terms.join(', ')));
-        dict.append(row);
-      }
-    } else if (st.llmLabel && !st.done) {
-      dict.append(el('div', 'skeleton line-sk'), el('div', 'skeleton line-sk short'));
-    }
+    body.forEach((line, i) => {
+      const cls = /^\d+[.)]/.test(line.trim()) ? 'sense' : /^\s|^[«"“]/.test(line) ? 'example' : i === 0 ? 'meta' : 'line';
+      dict.append(el('div', cls, line.trim()));
+    });
+    if (!st.done && body.length < 2) dict.append(el('div', 'skeleton line-sk'), el('div', 'skeleton line-sk short'));
     if (st.error) dict.append(el('div', 'error', st.error));
-    if (st.needsKey && st.done && !st.error) {
-      dict.append(el('div', 'hint', 'Ajoutez une clé Claude ou OpenAI dans les réglages pour une définition contextuelle.'));
-    }
     card.append(dict);
 
     const t = st.timings;
-    const parts = t.cache ? ['cache'] : [
-      t.google !== undefined && `Google ${t.google} ms`,
-      t.first !== undefined && `${st.llmLabel} ${t.first}→${t.llm ?? '…'} ms`,
-    ].filter(Boolean);
-    if (parts.length) card.append(el('div', 'footer', parts.join(' · ')));
+    const foot = t.cache ? `${st.label} · cache` : t.first !== undefined ? `${st.label} · ${t.first}→${t.total} ms` : st.label;
+    if (foot) card.append(el('div', 'footer', foot));
 
     place();
   }
@@ -321,5 +309,6 @@
     .line-sk.short { width: 160px; }
     @keyframes pulse { 50% { opacity: .5; } }
     .toast { padding: 8px 12px; font-size: 12px; }
+    .setup { margin-top: 10px; font: inherit; font-weight: 600; color: #fff; background: var(--accent); border: 0; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
   `;
 })();

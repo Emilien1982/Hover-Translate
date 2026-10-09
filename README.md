@@ -2,52 +2,54 @@
 
 Extension Chrome (Manifest V3) : maintenez **Alt / Option ⌥** et survolez un mot. Une pop-up affiche :
 
-- en titre, la **traduction courte**, choisie selon le sens de la phrase ;
-- en dessous, une **entrée de dictionnaire** : catégorie grammaticale, sens numérotés, exemples.
+- en titre, la **traduction du mot dans le sens de la phrase** (« bank » → *rive* au bord d'une rivière, *banque* pour un dépôt de salaire) ;
+- en dessous, une **entrée de dictionnaire** : catégorie grammaticale, sens numérotés, exemples ;
+- si le mot est déjà dans votre langue, sa **définition** au lieu d'une traduction.
 
 ![pop-up](docs/popup.png)
 
-## Pourquoi c'est rapide
+## Principe : l'IA de l'utilisateur
 
-Deux moteurs partent **en parallèle** dès que le mot est détecté :
+La traduction est entièrement faite par un LLM, avec les identifiants de l'utilisateur. L'extension ne passe par aucun serveur intermédiaire et ne coûte rien à son éditeur. Comme il faut obligatoirement un fournisseur, plusieurs sont proposés, dont des gratuits :
 
-| Moteur | Rôle | Latence | Coût |
-|---|---|---|---|
-| Google Translate (endpoint public, sans clé) | titre instantané + mini-dictionnaire | ~50–200 ms | gratuit |
-| LLM en streaming (Claude Haiku 5.5 par défaut, ou OpenAI) | traduction **contextuelle** + entrée de dictionnaire | 1er mot ~300–600 ms | une fraction de centime par mot |
+| Fournisseur | Accès | Modèle recommandé par défaut |
+|---|---|---|
+| **Google Gemini** | clé gratuite (compte Google) | `gemini-3.5-flash-lite` |
+| **OpenRouter** | **connexion en 1 clic** (OAuth), modèles gratuits `:free` | `google/gemma-4-31b-it:free` |
+| **OpenAI** | clé API (l'abonnement ChatGPT n'inclut pas l'API) | `gpt-5-mini` |
+| **Anthropic Claude** | clé API (l'abonnement Claude n'inclut pas l'API) | `claude-haiku-5-5` |
+| **Groq** | clé, offre gratuite, très rapide | `llama-3.3-70b-versatile` |
+| **Mistral AI** | clé, offre « Experiment » gratuite | `mistral-small-latest` |
+| **Hugging Face** | jeton « Inference Providers », crédits mensuels offerts | `google/gemma-4-31B-it` |
 
-Le titre de Google s'affiche tout de suite. La première ligne du LLM le remplace dès qu'elle arrive, car elle tient compte de la phrase : « bank » donne *rive* au bord d'une rivière, mais *banque* pour un dépôt de salaire. Les requêtes sont annulées quand la souris passe à un autre mot, et les résultats sont mis en cache (mot + phrase). Les temps mesurés s'affichent en bas de la pop-up.
+La liste des modèles est chargée depuis le fournisseur, avec le modèle recommandé en tête. Elle reste donc à jour quand les modèles changent.
 
-Sans clé API, l'extension fonctionne quand même : Google seul fournit la traduction et la liste des sens.
+Pour rester rapide :
+- la réponse arrive **en streaming** ;
+- le titre s'affiche **dès que la 1ʳᵉ ligne est complète**, jamais de traduction provisoire ;
+- la « réflexion » des modèles est coupée quand c'est possible ;
+- la requête est annulée dès que la souris passe à un autre mot ;
+- les réponses sont mises en cache (mot + phrase).
+
+## Langues
+
+- **Source** : détectée sur la **phrase**, pas sur le mot seul (« pain », « chat » sont ambigus). La détection utilise le détecteur de langue intégré à Chrome, sur l'appareil ; à défaut, l'attribut `lang` de la page.
+- **Destination** : « Automatique » (langue du navigateur) ou l'une des 43 langues courantes.
 
 ## Installation (mode développeur)
 
-1. Ouvrez `chrome://extensions`.
-2. Activez le **Mode développeur** (interrupteur en haut à droite).
-3. Cliquez sur **Charger l'extension non empaquetée** et choisissez ce dossier (celui qui contient `manifest.json`).
-4. Épinglez l'icône « Aa » si vous voulez y accéder facilement : un clic dessus ouvre les réglages.
+1. Ouvrez `chrome://extensions` et activez le **Mode développeur** (en haut à droite).
+2. Cliquez sur **Charger l'extension non empaquetée** et choisissez ce dossier.
+3. La page de réglages s'ouvre : choisissez un fournisseur, collez la clé (ou connectez-vous à OpenRouter), puis cliquez sur **Enregistrer et tester**.
+4. **Rechargez** vos onglets déjà ouverts, maintenez Alt et survolez un mot.
 
-Après une modification du code, cliquez sur ↻ sur la carte de l'extension dans `chrome://extensions`, puis **rechargez l'onglet** de test. Les onglets déjà ouverts n'ont pas le script.
-
-## Configuration
-
-Dans les réglages (clic sur l'icône) :
-
-- **Touche à maintenir** : Alt (par défaut), Ctrl, Maj, Cmd, ou aucune.
-- **Raccourci bascule** : `Alt+Shift+T` active ou désactive le mode survol sans avoir à tenir de touche. Échap quitte. Pour le changer, allez sur `chrome://extensions/shortcuts`.
-- **Langue cible** : `fr` par défaut (celle du navigateur).
-- **Moteur IA** : Claude ou OpenAI, avec la clé API et le modèle.
-  - Clé Anthropic : <https://console.anthropic.com> → API Keys. Modèle conseillé : `claude-haiku-5-5`, le plus rapide.
-  - Clé OpenAI : <https://platform.openai.com/api-keys>. Prenez un petit modèle rapide.
-- **Tester avec « bank »** : vérifie la clé et affiche les latences réelles.
-
-Les clés sont stockées dans `chrome.storage.local`, sur cette machine uniquement (pas de synchronisation), et ne sont envoyées qu'au fournisseur choisi.
+Après une modification du code : ↻ sur la carte de l'extension, puis rechargez l'onglet.
 
 ## Utilisation
 
-- Maintenez Alt et survolez un mot. Vous pouvez relâcher : la pop-up reste affichée tant que la souris est proche.
-- Pour traduire une **expression**, sélectionnez-la puis survolez la sélection avec Alt.
-- Éloignez la souris, faites défiler la page, cliquez ailleurs ou appuyez sur Échap pour fermer.
+- **Alt maintenu + survol.** Vous pouvez relâcher : la pop-up reste tant que la souris est proche.
+- **`Alt+Shift+T`** active le mode survol sans touche à tenir. Échap le désactive. Raccourci modifiable dans `chrome://extensions/shortcuts`.
+- **Expression de plusieurs mots** : sélectionnez-la, puis survolez la sélection avec Alt.
 
 ## Tests
 
@@ -57,20 +59,25 @@ npx playwright install chromium
 npm test
 ```
 
-`test/e2e.mjs` charge l'extension dans un Chromium automatisé, puis vérifie plusieurs comportements : survol avec Alt, rendu du titre et du dictionnaire, contexte transmis, cache, mode bascule, Google seul, et erreur 401 de la vraie API Anthropic avec une clé invalide. Le LLM est remplacé par un serveur local qui imite le streaming SSE d'Anthropic, ce qui évite d'avoir besoin d'une clé. Les captures sont écrites dans `test/output/`.
+`test/e2e.mjs` charge l'extension dans un Chromium automatisé et vérifie 40 comportements :
+- survol, rendu, absence de titre provisoire, cache, mode définition ;
+- format des requêtes pour chaque type d'API, nouvel essai quand un modèle refuse les paramètres de vitesse ;
+- page de réglages.
+
+Les fournisseurs sont imités par un serveur local qui renvoie du streaming SSE. Une dernière série appelle **les 7 vrais fournisseurs avec une clé invalide**, pour prouver que l'extension les atteint et affiche un message clair. Les captures sont écrites dans `test/output/`.
 
 ## Structure
 
 ```
 manifest.json
-src/background.js   service worker : Google + LLM en streaming, cache, raccourci
-src/content.js      détection du mot (Intl.Segmenter), pop-up en Shadow DOM
-src/options.*       page de réglages
-src/settings.js     valeurs par défaut partagées
+src/settings.js     fournisseurs, réglages, langues
+src/background.js   service worker : appel LLM en streaming, cache, raccourci
+src/content.js      détection du mot et de la langue, pop-up en Shadow DOM
+src/options.*       page de réglages (choix du fournisseur, connexion OpenRouter)
 ```
 
 ## Limites connues
 
-- Les champs de saisie (`input`, `textarea`) et les PDF intégrés ne sont pas pris en charge.
-- Les pages `chrome://` et le Chrome Web Store n'acceptent pas les scripts d'extension.
-- L'endpoint Google utilisé n'est pas une API officielle : il peut changer. Le LLM prend alors le relais.
+- Les champs de saisie et les PDF intégrés ne sont pas pris en charge ; les pages `chrome://` et le Chrome Web Store refusent les scripts d'extension.
+- « Se connecter avec ChatGPT » (paiement via l'abonnement ChatGPT) est réservé à des partenaires d'OpenAI : à ajouter quand l'accès sera ouvert.
+- Les clés sont stockées localement dans `chrome.storage.local`, sans synchronisation, et ne sont envoyées qu'au fournisseur choisi.

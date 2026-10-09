@@ -4,31 +4,74 @@
   <meta charset="utf-8">
   <title>Hover Translate — réglages</title>
   <style>
-    :root { color-scheme: light dark; --muted: #6b7280; --line: #d1d5db; --accent: #2563eb; }
-    body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 640px; margin: 32px auto; padding: 0 16px; }
+    :root { color-scheme: light dark; --muted: #6b7280; --line: #d1d5db; --accent: #2563eb; --card: rgba(127,127,127,.06); --ok: #16a34a; --err: #dc2626; }
+    body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 680px; margin: 32px auto; padding: 0 16px; }
     h1 { font-size: 22px; margin-bottom: 4px; }
     p.sub { color: var(--muted); margin-top: 0; }
     fieldset { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin: 18px 0; }
     legend { font-weight: 600; padding: 0 6px; }
     label { display: block; margin: 10px 0 4px; font-weight: 500; }
     input[type=text], input[type=password], select { width: 100%; box-sizing: border-box; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; font: inherit; }
-    .row { display: flex; gap: 8px; align-items: center; }
     .help { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     button { font: inherit; padding: 7px 14px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: white; cursor: pointer; }
     button.secondary { background: transparent; color: var(--accent); }
-    .provider { display: none; }
-    .provider.on { display: block; }
-    #saved { color: #16a34a; margin-left: 8px; }
-    pre#test-out { white-space: pre-wrap; background: rgba(127,127,127,.1); border-radius: 8px; padding: 10px; min-height: 3em; }
+    button:disabled { opacity: .5; cursor: default; }
     a { color: var(--accent); }
+
+    #providers { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+    .provider { display: block; margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; background: var(--card); font-weight: 400; }
+    .provider:has(input:checked) { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+    .provider input { margin: 0 6px 0 0; }
+    .provider b { font-weight: 600; }
+    .provider .badge { display: block; color: var(--muted); font-size: 11px; margin: 2px 0 0 20px; }
+    .provider .ok { color: var(--ok); font-size: 11px; margin-left: 4px; }
+    #panel { margin-top: 14px; padding-top: 4px; border-top: 1px solid var(--line); }
+    #panel[hidden] { display: none; }
+    .or { color: var(--muted); font-size: 12px; margin: 10px 0 0; }
+    #status { margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: var(--card); white-space: pre-wrap; }
+    #status.ok { border-left: 3px solid var(--ok); }
+    #status.err { border-left: 3px solid var(--err); }
+    #status[hidden] { display: none; }
   </style>
 </head>
 <body>
   <h1>Hover Translate</h1>
-  <p class="sub">Survolez un mot tout en maintenant la touche choisie, ou activez le mode avec le raccourci.</p>
+  <p class="sub">Maintenez la touche choisie et survolez un mot : sa traduction en contexte s'affiche, fournie par l'IA de votre choix.</p>
 
   <fieldset>
-    <legend>Déclenchement</legend>
+    <legend>1. Fournisseur d'IA</legend>
+    <p class="help" style="margin-top:0">Choisissez un service auquel vous avez accès. Plusieurs sont gratuits.</p>
+    <div id="providers"></div>
+
+    <div id="panel" hidden>
+      <div id="oauth" hidden>
+        <label>Connexion</label>
+        <div class="row">
+          <button id="login">Se connecter avec <span class="pname"></span></button>
+          <span class="help" id="login-state"></span>
+        </div>
+        <p class="or">ou collez une clé existante :</p>
+      </div>
+      <label for="key">Clé API <span class="pname"></span></label>
+      <input type="password" id="key" autocomplete="off" spellcheck="false">
+      <p class="help"><span id="key-help"></span> <a id="key-link" target="_blank" rel="noopener">Obtenir une clé ↗</a></p>
+
+      <label for="model">Modèle</label>
+      <input type="text" id="model" list="model-list" spellcheck="false">
+      <datalist id="model-list"></datalist>
+      <p class="help" id="model-help">Le modèle recommandé est rapide et peu coûteux. La liste se charge une fois la clé saisie.</p>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>2. Langue de destination</legend>
+    <select id="targetLang"></select>
+    <p class="help">Si le mot est déjà dans cette langue, la pop-up donne sa définition au lieu d'une traduction.</p>
+  </fieldset>
+
+  <fieldset>
+    <legend>3. Déclenchement</legend>
     <label for="holdKey">Touche à maintenir pendant le survol</label>
     <select id="holdKey">
       <option value="Alt">Alt / Option ⌥</option>
@@ -37,54 +80,14 @@
       <option value="Meta">Cmd ⌘ / Windows</option>
       <option value="">Aucune (raccourci bascule uniquement)</option>
     </select>
-    <p class="help">Raccourci bascule actuel : <b id="shortcut">…</b> —
-      <a href="#" id="edit-shortcut">le modifier</a> (page chrome://extensions/shortcuts). Échap désactive le mode.</p>
-  </fieldset>
-
-  <fieldset>
-    <legend>Traduction</legend>
-    <label for="targetLang">Langue de destination</label>
-    <select id="targetLang"></select>
-    <p class="help">Si le mot est déjà dans cette langue, la pop-up donne sa définition au lieu d'une traduction.</p>
-    <label class="row"><input type="checkbox" id="googleQuick"> Titre instantané via Google Translate (gratuit, ~150 ms)</label>
-
-    <label for="provider">Moteur IA pour l'entrée de dictionnaire</label>
-    <select id="provider">
-      <option value="anthropic">Claude (Anthropic)</option>
-      <option value="openai">OpenAI</option>
-      <option value="none">Aucun — Google uniquement</option>
-    </select>
-
-    <div class="provider" data-p="anthropic">
-      <label for="anthropicKey">Clé API Anthropic</label>
-      <input type="password" id="anthropicKey" placeholder="sk-ant-…" autocomplete="off">
-      <label for="anthropicModel">Modèle</label>
-      <input type="text" id="anthropicModel" list="anthropic-models">
-      <datalist id="anthropic-models">
-        <option value="claude-haiku-5-5">
-        <option value="claude-sonnet-5-5">
-      </datalist>
-      <p class="help">Haiku 5.5 est le plus rapide et coûte une fraction de centime par mot. Clé sur console.anthropic.com.</p>
-    </div>
-    <div class="provider" data-p="openai">
-      <label for="openaiKey">Clé API OpenAI</label>
-      <input type="password" id="openaiKey" placeholder="sk-…" autocomplete="off">
-      <label for="openaiModel">Modèle</label>
-      <input type="text" id="openaiModel">
-      <p class="help">Choisissez un petit modèle rapide. Clé sur platform.openai.com.</p>
-    </div>
-
-    <label for="baseUrl">URL de l'API (optionnel : proxy ou serveur compatible)</label>
-    <input type="text" id="baseUrl" placeholder="laisser vide pour l'API officielle">
-    <p class="help">Les clés restent dans le stockage local de Chrome sur cette machine et ne sont envoyées qu'au fournisseur choisi.</p>
+    <p class="help">Raccourci bascule : <b id="shortcut">…</b> —
+      <a href="#" id="edit-shortcut">le modifier</a>. Échap désactive le mode.</p>
   </fieldset>
 
   <div class="row">
-    <button id="save">Enregistrer</button>
-    <button id="test" class="secondary">Tester avec « bank »</button>
-    <span id="saved"></span>
+    <button id="save">Enregistrer et tester</button>
   </div>
-  <pre id="test-out" hidden></pre>
+  <div id="status" hidden></div>
 
   <script type="module" src="options.js"></script>
 </body>
